@@ -30,6 +30,7 @@ constexpr UINT PLACEHOLDER_ID = 1;
 
 enum MenuId : UINT {
     ID_REFRESH = 100, ID_AUTOSTART, ID_HIDE_LAST_KNOWN, ID_WIDGET_BACKGROUND, ID_EXIT, ID_MODE_WIDGET, ID_MODE_TRAY, ID_SUPPORT, ID_REPORT,
+    ID_WIDGET_LEFT, ID_WIDGET_RIGHT,
     ID_MONITOR_ALL = 300, ID_MONITOR_MAIN, ID_MONITOR_FIRST,  // "Show the widget on": ID_MONITOR_FIRST + 0..31
     ID_DEVICE_FIRST = 1000
 };
@@ -51,6 +52,7 @@ bool g_useWidget = false;      // what is actually shown right now
 bool g_hideLastKnown = false;  // hide (last known) / asleep devices from taskbar and tray
 std::wstring g_widgetMonitor = L"all";  // which taskbars show the widget: "all", "main" or one monitor id
 bool g_widgetBackground = false;  // draw a plate behind the taskbar text (transparent taskbar themes)
+bool g_widgetPositionLeft = false;
 
 struct TrayEntry {
     UINT uid = 0;
@@ -163,6 +165,8 @@ bool LoadHideLastKnown() { return LoadBoolSetting(L"HideLastKnownDevices", false
 void SaveHideLastKnown(bool on) { SaveBoolSetting(L"HideLastKnownDevices", on); }
 bool LoadWidgetBackground() { return LoadBoolSetting(L"WidgetBackground", false); }
 void SaveWidgetBackground(bool on) { SaveBoolSetting(L"WidgetBackground", on); }
+bool LoadWidgetPositionLeft() { return LoadBoolSetting(L"WidgetPositionLeft", false); }
+void SaveWidgetPositionLeft(bool on) { SaveBoolSetting(L"WidgetPositionLeft", on); }
 std::wstring LoadWidgetMonitor() {
     wchar_t buf[512] = {};
     DWORD size = sizeof(buf) - sizeof(wchar_t);
@@ -522,6 +526,12 @@ void SetWidgetBackground(bool on) {
     widget::SetBackground(on);
 }
 
+void SetWidgetPosition(bool left) {
+    g_widgetPositionLeft = left;
+    SaveWidgetPositionLeft(left);
+    widget::SetPosition(left);
+}
+
 void SetHideLastKnown(bool on) {
     g_hideLastKnown = on;
     SaveHideLastKnown(on);
@@ -602,6 +612,13 @@ void ShowMenu() {
     CheckMenuRadioItem(m, ID_MODE_WIDGET, ID_MODE_TRAY, g_wantWidget ? ID_MODE_WIDGET : ID_MODE_TRAY, MF_BYCOMMAND);
     UINT bgFlags = MF_STRING | (g_widgetBackground ? MF_CHECKED : 0) | (g_wantWidget ? 0 : MF_GRAYED);
     AppendMenuW(m, bgFlags, ID_WIDGET_BACKGROUND, L"Background behind taskbar text (for transparent taskbars)");
+    HMENU position = CreatePopupMenu();
+    UINT posFlags = MF_STRING | (g_wantWidget ? 0 : MF_GRAYED);
+    AppendMenuW(position, posFlags, ID_WIDGET_LEFT, L"Left side");
+    AppendMenuW(position, posFlags, ID_WIDGET_RIGHT, L"Right side");
+    CheckMenuRadioItem(position, ID_WIDGET_LEFT, ID_WIDGET_RIGHT,
+                       g_widgetPositionLeft ? ID_WIDGET_LEFT : ID_WIDGET_RIGHT, MF_BYCOMMAND);
+    AppendMenuW(m, MF_POPUP | (g_wantWidget ? 0 : MF_GRAYED), (UINT_PTR)position, L"Widget position");
     // With more than one monitor: choose which taskbars show the widget (all, main only, or one monitor).
     auto monitors = widget::OtherMonitors();
     if (monitors.size() > 31) monitors.resize(31);
@@ -641,6 +658,8 @@ void ShowMenu() {
         case ID_AUTOSTART: SetAutostart(!AutostartEnabled()); break;
         case ID_HIDE_LAST_KNOWN: SetHideLastKnown(!g_hideLastKnown); break;
         case ID_WIDGET_BACKGROUND: SetWidgetBackground(!g_widgetBackground); break;
+        case ID_WIDGET_LEFT: SetWidgetPosition(true); break;
+        case ID_WIDGET_RIGHT: SetWidgetPosition(false); break;
         case ID_MONITOR_ALL: SetWidgetMonitor(L"all"); break;
         case ID_MONITOR_MAIN: SetWidgetMonitor(L"main"); break;
         case ID_MODE_WIDGET: SetMode(true); break;
@@ -842,6 +861,8 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR cmdLine, int) {
     g_hideLastKnown = LoadHideLastKnown();
     g_widgetBackground = LoadWidgetBackground();
     widget::SetBackground(g_widgetBackground);  // remembered by the widget across re-creation
+    g_widgetPositionLeft = LoadWidgetPositionLeft();
+    widget::SetPosition(g_widgetPositionLeft);
     g_widgetMonitor = LoadWidgetMonitor();
     widget::SetMonitorChoice(g_widgetMonitor);
     LoadHidden();
