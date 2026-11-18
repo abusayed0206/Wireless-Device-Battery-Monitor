@@ -239,6 +239,40 @@ RECT WidgetsButtonRect() {
     return r;
 }
 
+// Returns the leftmost safe native boundary for "before taskbar apps".
+// Widgets/Weather are preferred when present; task buttons are the fallback.
+int BeforeAppTarget(HWND bar) {
+    RECT br{};
+    if (!bar || !GetWindowRect(bar, &br)) return INT_MIN;
+
+    if (bar == g_taskbar) {
+        RECT widgets = WidgetsButtonRect();
+        if (widgets.right > widgets.left && widgets.left >= br.left && widgets.right <= br.right)
+            return widgets.left;
+    }
+
+    AcquireSRWLockShared(&g_wbLock);
+    for (const auto& s : g_spans)
+        if (s.bar == bar && s.measured) {
+            if (s.hasWidgets) {
+                int target = s.widgetsLeft;
+                ReleaseSRWLockShared(&g_wbLock);
+                return target;
+            }
+        }
+    ReleaseSRWLockShared(&g_wbLock);
+
+    AcquireSRWLockShared(&g_wbLock);
+    for (const auto& s : g_spans)
+        if (s.bar == bar && s.measured && s.hasTasks) {
+            int target = s.tasksLeft;
+            ReleaseSRWLockShared(&g_wbLock);
+            return target;
+        }
+    ReleaseSRWLockShared(&g_wbLock);
+    return INT_MIN;
+}
+
 void ApplyTipTheme() {
     if (!g_tip) return;
     using SetWindowThemeFn = HRESULT(WINAPI*)(HWND, LPCWSTR, LPCWSTR);
@@ -476,18 +510,14 @@ void PositionMirror(Mirror& m) {
             known = true;
         }
     } else {
+        bool beforeApps = g_position == widget::Position::BeforeAppButtons;
         AcquireSRWLockShared(&g_wbLock);
         for (const auto& s : g_spans)
             if (s.bar == m.bar && s.measured) {
                 right = s.hasClock ? s.clockLeft : bar.right - Px(8);
-                if (s.hasTasks) minLeft = s.tasksRight + Px(4);
-                if (g_position == widget::Position::BeforeAppButtons && (s.hasTasks || s.hasWidgets)) {
-                    int target = s.hasWidgets ? s.widgetsLeft : s.tasksLeft;
-                    if (s.hasTasks && s.hasWidgets && s.widgetsRight >= s.tasksLeft)
-                        target = s.tasksLeft;
-                    left = target - m.size.cx - Px(4);
-                    known = left >= bar.left;
-                } else if (g_position == widget::Position::LeftEdge) {
+                if (s.hasTasks && g_position != widget::Position::BeforeAppButtons)
+                    minLeft = s.tasksRight + Px(4);
+                if (g_position == widget::Position::LeftEdge) {
                     left = bar.left + Px(8);
                     known = true;
                 } else if (g_position == widget::Position::NotificationRight) {
@@ -495,6 +525,13 @@ void PositionMirror(Mirror& m) {
                 }
             }
         ReleaseSRWLockShared(&g_wbLock);
+        if (beforeApps) {
+            int target = BeforeAppTarget(m.bar);
+            if (target != INT_MIN) {
+                left = target - m.size.cx - Px(4);
+                known = left >= bar.left;
+            }
+        }
     }
     DWORD offset = 0, sz = sizeof(offset);
     if (RegGetValueW(HKEY_CURRENT_USER, L"Software\\WirelessBattery", L"TaskbarOffset", RRF_RT_REG_DWORD, nullptr, &offset, &sz) ==
@@ -502,8 +539,22 @@ void PositionMirror(Mirror& m) {
         right -= Px((int)offset);
     if (g_position == widget::Position::LeftEdge) {
         left += Px((int)offset);
+        if (IsXamlTaskbar(m.bar)) {
+            AcquireSRWLockShared(&g_wbLock);
+            for (const auto& s : g_spans)
+                if (s.bar == m.bar && s.measured && s.hasTasks &&
+                    left + m.size.cx + Px(2) > s.tasksLeft)
+                    known = false;
+            ReleaseSRWLockShared(&g_wbLock);
+        } else {
+            HWND rebar = FindWindowExW(m.bar, nullptr, L"ReBarWindow32", nullptr);
+            RECT rr{};
+            if (rebar && GetWindowRect(rebar, &rr) &&
+                left + m.size.cx + Px(2) > rr.left)
+                known = false;
+        }
     } else if (g_position == widget::Position::BeforeAppButtons) {
-        left += Px((int)offset);
+        // No custom offset: it must remain adjacent to the native boundary.
     } else {
         left = right - m.size.cx - Px(2);
     }
@@ -833,6 +884,21 @@ bool Reposition() {
         ScreenToClient(g_taskbar, &p);
         int left = p.x;
 
+        bool collides = false;
+        if (IsXamlTaskbar(g_taskbar)) {
+            AcquireSRWLockShared(&g_wbLock);
+            for (const auto& s : g_spans)
+                if (s.bar == g_taskbar && s.measured && s.hasTasks &&
+                    left + g_size.cx + Px(2) > s.tasksLeft)
+                    collides = true;
+            ReleaseSRWLockShared(&g_wbLock);
+        } else if (g_rebar && IsWindow(g_rebar)) {
+            RECT rr{};
+            if (GetWindowRect(g_rebar, &rr) && left + g_size.cx + Px(2) > rr.left)
+                collides = true;
+        }
+        if (collides) return true;
+
         if (g_rebar && IsWindow(g_rebar)) {
             RECT rr;
             if (GetWindowRect(g_rebar, &rr)) {
@@ -857,25 +923,17 @@ bool Reposition() {
     }
 
     if (g_position == widget::Position::BeforeAppButtons) {
-        int screenLeft = INT_MIN;
-        if (IsXamlTaskbar(g_taskbar)) {
-            AcquireSRWLockShared(&g_wbLock);
-            for (const auto& s : g_spans)
-                if (s.bar == g_taskbar && s.measured) {
-                    if (s.hasWidgets && (!s.hasTasks || s.widgetsRight < s.tasksLeft))
-                        screenLeft = s.widgetsLeft - g_size.cx - Px(4);
-                    else if (s.hasTasks)
-                        screenLeft = s.tasksLeft - g_size.cx - Px(4);
-                }
-            ReleaseSRWLockShared(&g_wbLock);
-        } else if (g_rebar && IsWindow(g_rebar)) {
+        int target = BeforeAppTarget(g_taskbar);
+        int screenLeft = target;
+        if (target == INT_MIN && g_rebar && IsWindow(g_rebar)) {
             RECT rr;
             if (GetWindowRect(g_rebar, &rr))
                 screenLeft = rr.left - g_size.cx - Px(2);
         }
 
         if (screenLeft == INT_MIN) return true;
-        screenLeft += Px((int)customOffset);
+        if (target != INT_MIN)
+            screenLeft = target - g_size.cx - Px(4);
         POINT p{ screenLeft, bar.top };
         ScreenToClient(g_taskbar, &p);
         int left = p.x;
