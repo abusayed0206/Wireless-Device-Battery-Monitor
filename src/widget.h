@@ -26,6 +26,8 @@ void SetItems(const std::vector<WidgetItem>& items, const std::wstring& tooltip)
 void SetLightTheme(bool light);
 // Draws a rounded plate in the taskbar's colours behind the text (kept across Create/Destroy).
 void SetBackground(bool on);
+// Places the widget on the right (next to the notification area) or at the left edge of the taskbar.
+void SetPosition(bool left);
 // Which taskbars show the strip: L"all" (default), L"main", or the id of one other monitor from
 // OtherMonitors() (then only that monitor shows it). Kept across Create/Destroy.
 void SetMonitorChoice(const std::wstring& choice);
